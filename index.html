@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>MP4音声 左右分離＆波形表示</title>
+  <title>音声 左右分離＆波形表示 (MP4/WAV対応)</title>
   <style>
     canvas {
       width: 100%;
@@ -20,8 +20,8 @@
   </style>
 </head>
 <body>
-  <h2>🎧 MP4音声 左右チャンネルの波形を表示して同時再生</h2>
-  <input type="file" id="fileInput" accept="video/mp4" />
+  <h2>🎧 音声の左右チャンネルを分離・波形表示（MP4 / WAV）</h2>
+  <input type="file" id="fileInput" accept="video/mp4,audio/wav" />
   <button id="play">▶ 再生</button>
 
   <h3>🔊 左チャンネル</h3>
@@ -47,27 +47,30 @@
 
       const arrayBuffer = await file.arrayBuffer();
 
-      // Audio部分のみをデコード（動画含まれていてもOK）
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      try {
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-      if (audioBuffer.numberOfChannels < 2) {
-        alert("ステレオ音声ではありません！");
-        return;
+        if (audioBuffer.numberOfChannels < 2) {
+          alert("ステレオ音声ではありません！");
+          return;
+        }
+
+        const leftData = audioBuffer.getChannelData(0);
+        const rightData = audioBuffer.getChannelData(1);
+
+        leftBuffer = audioContext.createBuffer(1, leftData.length, audioBuffer.sampleRate);
+        rightBuffer = audioContext.createBuffer(1, rightData.length, audioBuffer.sampleRate);
+        leftBuffer.copyToChannel(leftData, 0);
+        rightBuffer.copyToChannel(rightData, 0);
+
+        drawWaveform(leftCtx, leftData, "lime");
+        drawWaveform(rightCtx, rightData, "aqua");
+
+        alert("読み込み完了！MP4またはWAVのステレオ音声を分離しました。");
+      } catch (err) {
+        console.error(err);
+        alert("音声の読み込みに失敗しました。形式を確認してください。");
       }
-
-      const leftData = audioBuffer.getChannelData(0);
-      const rightData = audioBuffer.getChannelData(1);
-
-      // 左右別々のAudioBufferを作成
-      leftBuffer = audioContext.createBuffer(1, leftData.length, audioBuffer.sampleRate);
-      rightBuffer = audioContext.createBuffer(1, rightData.length, audioBuffer.sampleRate);
-      leftBuffer.copyToChannel(leftData, 0);
-      rightBuffer.copyToChannel(rightData, 0);
-
-      drawWaveform(leftCtx, leftData, "lime");
-      drawWaveform(rightCtx, rightData, "aqua");
-
-      alert("分解・波形表示が完了しました！");
     });
 
     playButton.addEventListener("click", () => {
@@ -84,10 +87,8 @@
 
       const merger = audioContext.createChannelMerger(2);
 
-      // 左チャンネル → Lに接続
-      leftSource.connect(merger, 0, 0);
-      // 右チャンネル → Rに接続
-      rightSource.connect(merger, 0, 1);
+      leftSource.connect(merger, 0, 0); // 左チャンネル
+      rightSource.connect(merger, 0, 1); // 右チャンネル
 
       merger.connect(audioContext.destination);
 
