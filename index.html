@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>音声分析ビューワー</title>
+  <meta charset="UTF-8" />
+  <title>左右波形＆スペクトログラム重ね表示（差異色付き）</title>
   <style>
     body {
       background: #222;
@@ -15,6 +15,7 @@
       height: 200px;
       background: #000;
       margin: 10px 0;
+      display: block;
     }
     .controls {
       margin: 10px 0;
@@ -22,211 +23,297 @@
     input[type="range"] {
       width: 100%;
     }
+    label {
+      display: block;
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
-  <h2>🎧 音声左右分離・波形＆スペクトログラム表示</h2>
+  <h2>🎧 左右波形＆スペクトログラム 重ね表示（差異色）</h2>
   <input type="file" id="fileInput" accept="video/mp4,audio/wav" />
   <div class="controls">
     <button id="play">▶ 再生</button>
-    <input type="range" id="seekBar" min="0" max="1" step="0.001" value="0">
+    <input type="range" id="seekBar" min="0" max="1" step="0.001" value="0" />
   </div>
 
-  <h3>🔊 左チャンネル（波形）</h3>
-  <canvas id="leftCanvas" width="800" height="200"></canvas>
-  <h3>🔊 左チャンネル（スペクトログラム）</h3>
-  <canvas id="leftSpec" width="800" height="200"></canvas>
-  <label>音量：<input type="range" id="leftVolume" min="0" max="1" step="0.01" value="1"></label>
+  <h3>🔊 波形（左右重ね）</h3>
+  <canvas id="waveformCanvas" width="800" height="200"></canvas>
 
-  <h3>🔊 右チャンネル（波形）</h3>
-  <canvas id="rightCanvas" width="800" height="200"></canvas>
-  <h3>🔊 右チャンネル（スペクトログラム）</h3>
-  <canvas id="rightSpec" width="800" height="200"></canvas>
-  <label>音量：<input type="range" id="rightVolume" min="0" max="1" step="0.01" value="1"></label>
+  <h3>🔊 スペクトログラム（左右差異色付き）</h3>
+  <canvas id="spectrogramCanvas" width="800" height="200"></canvas>
 
-  <script>
-    const fileInput = document.getElementById("fileInput");
-    const playButton = document.getElementById("play");
-    const seekBar = document.getElementById("seekBar");
-    const leftCanvas = document.getElementById("leftCanvas");
-    const rightCanvas = document.getElementById("rightCanvas");
-    const leftSpec = document.getElementById("leftSpec");
-    const rightSpec = document.getElementById("rightSpec");
-    const leftCtx = leftCanvas.getContext("2d");
-    const rightCtx = rightCanvas.getContext("2d");
-    const leftSpecCtx = leftSpec.getContext("2d");
-    const rightSpecCtx = rightSpec.getContext("2d");
-    const leftVolume = document.getElementById("leftVolume");
-    const rightVolume = document.getElementById("rightVolume");
+  <label>左音量：<input type="range" id="leftVolume" min="0" max="1" step="0.01" value="1"></label>
+  <label>右音量：<input type="range" id="rightVolume" min="0" max="1" step="0.01" value="1"></label>
 
-    let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    let leftBuffer = null;
-    let rightBuffer = null;
-    let startTime = 0;
-    let pauseOffset = 0;
-    let duration = 0;
-    let playing = false;
+<script>
+  const fileInput = document.getElementById("fileInput");
+  const playButton = document.getElementById("play");
+  const seekBar = document.getElementById("seekBar");
+  const waveformCanvas = document.getElementById("waveformCanvas");
+  const spectrogramCanvas = document.getElementById("spectrogramCanvas");
+  const waveformCtx = waveformCanvas.getContext("2d");
+  const spectrogramCtx = spectrogramCanvas.getContext("2d");
+  const leftVolume = document.getElementById("leftVolume");
+  const rightVolume = document.getElementById("rightVolume");
 
-    let leftGainNode, rightGainNode;
-    let leftAnalyser, rightAnalyser;
-    let leftSource, rightSource;
+  let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  let leftBuffer = null;
+  let rightBuffer = null;
+  let startTime = 0;
+  let pauseOffset = 0;
+  let duration = 0;
+  let playing = false;
 
-    fileInput.addEventListener("change", async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
+  let leftGainNode, rightGainNode;
+  let leftAnalyser, rightAnalyser;
+  let leftSource, rightSource;
 
-      const arrayBuffer = await file.arrayBuffer();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-      if (audioBuffer.numberOfChannels < 2) {
-        alert("ステレオ音声ではありません！");
-        return;
-      }
+    const arrayBuffer = await file.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-      const leftData = audioBuffer.getChannelData(0);
-      const rightData = audioBuffer.getChannelData(1);
-
-      leftBuffer = audioContext.createBuffer(1, leftData.length, audioBuffer.sampleRate);
-      rightBuffer = audioContext.createBuffer(1, rightData.length, audioBuffer.sampleRate);
-      leftBuffer.copyToChannel(leftData, 0);
-      rightBuffer.copyToChannel(rightData, 0);
-
-      duration = leftBuffer.duration;
-      seekBar.max = duration;
-
-      drawWaveform(leftCtx, leftData, "lime");
-      drawWaveform(rightCtx, rightData, "aqua");
-
-      alert("読み込み完了！");
-    });
-
-    playButton.addEventListener("click", () => {
-      if (!leftBuffer || !rightBuffer) return alert("ファイルを読み込んでください");
-
-      if (playing) {
-        stopPlayback();
-        playButton.textContent = "▶ 再生";
-      } else {
-        startPlayback(pauseOffset);
-        playButton.textContent = "⏸ 一時停止";
-      }
-    });
-
-    function startPlayback(offset) {
-      leftSource = audioContext.createBufferSource();
-      rightSource = audioContext.createBufferSource();
-      leftSource.buffer = leftBuffer;
-      rightSource.buffer = rightBuffer;
-
-      leftGainNode = audioContext.createGain();
-      rightGainNode = audioContext.createGain();
-      leftGainNode.gain.value = parseFloat(leftVolume.value);
-      rightGainNode.gain.value = parseFloat(rightVolume.value);
-
-      leftAnalyser = audioContext.createAnalyser();
-      rightAnalyser = audioContext.createAnalyser();
-      leftAnalyser.fftSize = 256;
-      rightAnalyser.fftSize = 256;
-
-      const merger = audioContext.createChannelMerger(2);
-      leftSource.connect(leftGainNode).connect(leftAnalyser).connect(merger, 0, 0);
-      rightSource.connect(rightGainNode).connect(rightAnalyser).connect(merger, 0, 1);
-      merger.connect(audioContext.destination);
-
-      startTime = audioContext.currentTime - offset;
-      leftSource.start(0, offset);
-      rightSource.start(0, offset);
-      playing = true;
-
-      requestAnimationFrame(updateSeekBar);
-      requestAnimationFrame(drawSpectrograms);
-
-      leftSource.onended = stopPlayback;
+    if (audioBuffer.numberOfChannels < 2) {
+      alert("ステレオ音声ではありません！");
+      return;
     }
 
-    function stopPlayback() {
-      if (leftSource) leftSource.stop();
-      if (rightSource) rightSource.stop();
-      pauseOffset = audioContext.currentTime - startTime;
+    const leftData = audioBuffer.getChannelData(0);
+    const rightData = audioBuffer.getChannelData(1);
+
+    leftBuffer = audioContext.createBuffer(1, leftData.length, audioBuffer.sampleRate);
+    rightBuffer = audioContext.createBuffer(1, rightData.length, audioBuffer.sampleRate);
+    leftBuffer.copyToChannel(leftData, 0);
+    rightBuffer.copyToChannel(rightData, 0);
+
+    duration = leftBuffer.duration;
+    seekBar.max = duration;
+
+    drawWaveformCombined(waveformCtx, leftData, rightData);
+    alert("読み込み完了！");
+  });
+
+  playButton.addEventListener("click", () => {
+    if (!leftBuffer || !rightBuffer) return alert("ファイルを読み込んでください");
+
+    if (playing) {
+      stopPlayback();
+      playButton.textContent = "▶ 再生";
+    } else {
+      startPlayback(pauseOffset);
+      playButton.textContent = "⏸ 一時停止";
+    }
+  });
+
+  function startPlayback(offset) {
+    leftSource = audioContext.createBufferSource();
+    rightSource = audioContext.createBufferSource();
+    leftSource.buffer = leftBuffer;
+    rightSource.buffer = rightBuffer;
+
+    leftGainNode = audioContext.createGain();
+    rightGainNode = audioContext.createGain();
+    leftGainNode.gain.value = parseFloat(leftVolume.value);
+    rightGainNode.gain.value = parseFloat(rightVolume.value);
+
+    leftAnalyser = audioContext.createAnalyser();
+    rightAnalyser = audioContext.createAnalyser();
+    leftAnalyser.fftSize = 256;
+    rightAnalyser.fftSize = 256;
+
+    const merger = audioContext.createChannelMerger(2);
+    leftSource.connect(leftGainNode).connect(leftAnalyser).connect(merger, 0, 0);
+    rightSource.connect(rightGainNode).connect(rightAnalyser).connect(merger, 0, 1);
+    merger.connect(audioContext.destination);
+
+    startTime = audioContext.currentTime - offset;
+    leftSource.start(0, offset);
+    rightSource.start(0, offset);
+    playing = true;
+
+    requestAnimationFrame(updateSeekBar);
+    requestAnimationFrame(drawSpectrogramCombined);
+
+    leftSource.onended = stopPlayback;
+  }
+
+  function stopPlayback() {
+    if (leftSource) leftSource.stop();
+    if (rightSource) rightSource.stop();
+    pauseOffset = audioContext.currentTime - startTime;
+    playing = false;
+    playButton.textContent = "▶ 再生";
+  }
+
+  function updateSeekBar() {
+    if (!playing) return;
+    const current = audioContext.currentTime - startTime;
+    seekBar.value = current;
+    if (current >= duration) {
       playing = false;
       playButton.textContent = "▶ 再生";
+      return;
     }
+    requestAnimationFrame(updateSeekBar);
+  }
 
-    function updateSeekBar() {
-      if (!playing) return;
-      const current = audioContext.currentTime - startTime;
-      seekBar.value = current;
-      if (current >= duration) {
-        playing = false;
-        playButton.textContent = "▶ 再生";
-        return;
+  seekBar.addEventListener("input", () => {
+    if (playing) {
+      stopPlayback();
+      pauseOffset = parseFloat(seekBar.value);
+      startPlayback(pauseOffset);
+    } else {
+      pauseOffset = parseFloat(seekBar.value);
+    }
+  });
+
+  leftVolume.addEventListener("input", () => {
+    if (leftGainNode) leftGainNode.gain.value = parseFloat(leftVolume.value);
+  });
+
+  rightVolume.addEventListener("input", () => {
+    if (rightGainNode) rightGainNode.gain.value = parseFloat(rightVolume.value);
+  });
+
+  // ======= 波形を左右重ねて描画（差分で色分け） =======
+  function drawWaveformCombined(ctx, leftData, rightData) {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    ctx.clearRect(0, 0, width, height);
+
+    const step = Math.floor(leftData.length / width);
+    const amp = height / 2;
+
+    for (let i = 0; i < width; i++) {
+      let leftMin = 1.0, leftMax = -1.0;
+      let rightMin = 1.0, rightMax = -1.0;
+
+      for (let j = 0; j < step; j++) {
+        const lVal = leftData[i * step + j];
+        const rVal = rightData[i * step + j];
+        if (lVal < leftMin) leftMin = lVal;
+        if (lVal > leftMax) leftMax = lVal;
+        if (rVal < rightMin) rightMin = rVal;
+        if (rVal > rightMax) rightMax = rVal;
       }
-      requestAnimationFrame(updateSeekBar);
-    }
 
-    seekBar.addEventListener("input", () => {
-      if (playing) {
-        stopPlayback();
-        pauseOffset = parseFloat(seekBar.value);
-        startPlayback(pauseOffset);
+      // 差分判定
+      const diffMin = Math.abs(leftMin - rightMin);
+      const diffMax = Math.abs(leftMax - rightMax);
+      const threshold = 0.1; // 差分の閾値（調整可）
+
+      // 色決定関数
+      const getColor = (diff) => {
+        if (diff < threshold) return "gray"; // ほぼ同じならグレー
+        // 差が大きい場合、左青・右赤（分かりやすく）
+        return null;
+      };
+
+      // 下限ライン描画
+      const colorMin = getColor(diffMin);
+      if (colorMin === "gray") {
+        ctx.strokeStyle = "gray";
+        ctx.beginPath();
+        ctx.moveTo(i, amp - leftMin * amp);
+        ctx.lineTo(i, amp - rightMin * amp);
+        ctx.stroke();
       } else {
-        pauseOffset = parseFloat(seekBar.value);
+        // 左青線
+        ctx.strokeStyle = "blue";
+        ctx.beginPath();
+        ctx.moveTo(i, amp);
+        ctx.lineTo(i, amp - leftMin * amp);
+        ctx.stroke();
+        // 右赤線
+        ctx.strokeStyle = "red";
+        ctx.beginPath();
+        ctx.moveTo(i, amp);
+        ctx.lineTo(i, amp - rightMin * amp);
+        ctx.stroke();
       }
-    });
 
-    leftVolume.addEventListener("input", () => {
-      if (leftGainNode) leftGainNode.gain.value = parseFloat(leftVolume.value);
-    });
+      // 上限ライン描画
+      const colorMax = getColor(diffMax);
+      if (colorMax === "gray") {
+        ctx.strokeStyle = "gray";
+        ctx.beginPath();
+        ctx.moveTo(i, amp - leftMax * amp);
+        ctx.lineTo(i, amp - rightMax * amp);
+        ctx.stroke();
+      } else {
+        // 左青線
+        ctx.strokeStyle = "blue";
+        ctx.beginPath();
+        ctx.moveTo(i, amp);
+        ctx.lineTo(i, amp - leftMax * amp);
+        ctx.stroke();
+        // 右赤線
+        ctx.strokeStyle = "red";
+        ctx.beginPath();
+        ctx.moveTo(i, amp);
+        ctx.lineTo(i, amp - rightMax * amp);
+        ctx.stroke();
+      }
+    }
+  }
 
-    rightVolume.addEventListener("input", () => {
-      if (rightGainNode) rightGainNode.gain.value = parseFloat(rightVolume.value);
-    });
+  // ======= スペクトログラムを左右比較し差異色付きで描画 =======
+  function drawSpectrogramCombined() {
+    if (!playing) return;
 
-    function drawWaveform(ctx, data, color) {
-      const width = ctx.canvas.width;
-      const height = ctx.canvas.height;
-      ctx.clearRect(0, 0, width, height);
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      const step = Math.floor(data.length / width);
-      const amp = height / 2;
+    const width = spectrogramCanvas.width;
+    const height = spectrogramCanvas.height;
 
-      for (let i = 0; i < width; i++) {
-        let min = 1.0, max = -1.0;
-        for (let j = 0; j < step; j++) {
-          const val = data[i * step + j];
-          if (val < min) min = val;
-          if (val > max) max = val;
+    const leftDataArray = new Uint8Array(leftAnalyser.frequencyBinCount);
+    const rightDataArray = new Uint8Array(rightAnalyser.frequencyBinCount);
+
+    leftAnalyser.getByteFrequencyData(leftDataArray);
+    rightAnalyser.getByteFrequencyData(rightDataArray);
+
+    // スクロール処理：左へ1pxずつずらす
+    const imageData = spectrogramCtx.getImageData(1, 0, width - 1, height);
+    spectrogramCtx.putImageData(imageData, 0, 0);
+
+    // 新しい1列分描画（上から下に周波数）
+    for (let y = 0; y < height; y++) {
+      // 周波数binを上下でリニアにマッピング
+      const freqIndex = Math.floor(y / height * leftDataArray.length);
+
+      const leftVal = leftDataArray[freqIndex] / 255;
+      const rightVal = rightDataArray[freqIndex] / 255;
+
+      const diff = Math.abs(leftVal - rightVal);
+      const threshold = 0.15;
+
+      let r = 0, g = 0, b = 0;
+
+      if (diff < threshold) {
+        // 差が小さい → 灰色〜白っぽく
+        const v = Math.round(((leftVal + rightVal) / 2) * 255);
+        r = g = b = v;
+      } else {
+        if (leftVal > rightVal) {
+          // 左が強い → 青系
+          r = 0;
+          g = Math.round(leftVal * 128);
+          b = Math.round(leftVal * 255);
+        } else {
+          // 右が強い → 赤系
+          r = Math.round(rightVal * 255);
+          g = Math.round(rightVal * 50);
+          b = Math.round(rightVal * 50);
         }
-        ctx.moveTo(i, amp - min * amp);
-        ctx.lineTo(i, amp - max * amp);
       }
 
-      ctx.stroke();
+      spectrogramCtx.fillStyle = `rgb(${r},${g},${b})`;
+      spectrogramCtx.fillRect(width - 1, height - y - 1, 1, 1);
     }
 
-    function drawSpectrograms() {
-      if (!playing) return;
-      drawSpec(leftAnalyser, leftSpecCtx);
-      drawSpec(rightAnalyser, rightSpecCtx);
-      requestAnimationFrame(drawSpectrograms);
-    }
-
-    function drawSpec(analyser, ctx) {
-      const width = ctx.canvas.width;
-      const height = ctx.canvas.height;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(dataArray);
-
-      const imageData = ctx.getImageData(1, 0, width - 1, height);
-      ctx.putImageData(imageData, 0, 0);
-
-      for (let i = 0; i < height; i++) {
-        const value = dataArray[i];
-        ctx.fillStyle = `hsl(${value}, 100%, 50%)`;
-        ctx.fillRect(width - 1, height - i, 1, 1);
-      }
-    }
-  </script>
+    requestAnimationFrame(drawSpectrogramCombined);
+  }
+</script>
 </body>
 </html>
